@@ -2,25 +2,66 @@
 
 (() => {
   const panel = document.getElementById("charger-controls");
-  const availability = document.getElementById("control-availability");
-  const cableLock = document.getElementById("control-cable-lock");
+  const modeButtons = [...panel.querySelectorAll("button[data-mode]")];
+  const modeText = document.getElementById("mode-text");
+  const lockState = document.getElementById("control-cable-lock");
+  const lockButton = document.getElementById("cable-lock-toggle");
   const message = document.getElementById("control-result");
-  const buttons = [...panel.querySelectorAll("button[data-field]")];
-  const paths = { available: "/api/controls/availability", locked: "/api/controls/cable-lock" };
+  const MODE_TEXT = {
+    ALWAYS_ON: "Charging is always allowed.",
+    SCHEMA: "Charging follows the weekly schedule saved on the charger.",
+    ALWAYS_OFF: "Charging is blocked.",
+  };
   let current;
   let busy = false;
+  let hideTimer;
 
   function update() {
     const controls = current?.controls;
-    const knownMode = ["ALWAYS_ON", "ALWAYS_OFF", "SCHEMA", "SCHEDULE"].includes(current?.mode);
-    availability.textContent = current?.mode_label || "Unknown";
-    cableLock.textContent = controls?.locked === true ? "Lock enabled"
-      : controls?.locked === false ? "Lock disabled" : "Unknown";
-    for (const button of buttons) {
-      const field = button.dataset.field;
-      const reported = controls?.[field];
-      const known = field === "available" ? knownMode : typeof reported === "boolean";
-      button.disabled = busy || !known || reported === (button.dataset.value === "true");
+    const mode = controls?.mode ?? null;
+    for (const button of modeButtons) {
+      const selected = button.dataset.mode === mode;
+      button.setAttribute("aria-pressed", String(selected));
+      button.disabled = busy || !mode || selected;
+    }
+    modeText.textContent = MODE_TEXT[mode] || (current?.mode_label ?? "Mode unknown");
+
+    const lockEnabled = controls?.locked;
+    lockState.textContent = lockEnabled === true ? "Lock enabled" : lockEnabled === false ? "Lock disabled" : "Cable lock unknown";
+    lockButton.textContent = lockEnabled === true ? "Disable lock" : "Enable lock";
+    lockButton.disabled = busy || typeof lockEnabled !== "boolean";
+  }
+
+  function say(text, linger) {
+    clearTimeout(hideTimer);
+    message.hidden = false;
+    message.textContent = text;
+    if (linger) hideTimer = setTimeout(() => { message.hidden = true; }, 6000);
+  }
+
+  async function send(path, body) {
+    if (busy) return;
+    busy = true;
+    update();
+    say("Sending to the charger…");
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 30_000);
+    try {
+      const response = await fetch(path, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        referrerPolicy: "same-origin", body: JSON.stringify(body), signal: abort.signal,
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The charger command failed.");
+      render(data);
+      say(data.changed ? "The charger confirmed the change." : "The charger already had this setting.", true);
+    } catch (error) {
+      say(error.name === "AbortError" ? "The charger did not confirm the change. Check the status before trying again." : error.message, false);
+      refresh();
+    } finally {
+      clearTimeout(timer);
+      busy = false;
+      update();
     }
   }
 
@@ -31,35 +72,13 @@
     update();
   });
 
-  for (const button of buttons) {
-    button.addEventListener("click", async () => {
-      if (busy || button.disabled) return;
-      const field = button.dataset.field;
-      const state = button.dataset.value === "true";
-      busy = true;
-      update();
-      message.hidden = false;
-      message.textContent = "Sending request…";
-      const abort = new AbortController();
-      const timer = setTimeout(() => abort.abort(), 30_000);
-      try {
-        const response = await fetch(paths[field], {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          referrerPolicy: "same-origin", body: JSON.stringify({ [field]: state }), signal: abort.signal,
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "The charger command failed.");
-        render(data);
-        message.textContent = data.changed ? "The charger confirmed the setting."
-          : "The charger already reports the requested setting.";
-      } catch (error) {
-        message.textContent = error.name === "AbortError" ? "The command could not be confirmed." : error.message;
-        refresh();
-      } finally {
-        clearTimeout(timer);
-        busy = false;
-        update();
-      }
+  for (const button of modeButtons) {
+    button.addEventListener("click", () => {
+      if (!button.disabled) send("/api/controls/mode", { mode: button.dataset.mode });
     });
   }
+  lockButton.addEventListener("click", () => {
+    const locked = current?.controls?.locked;
+    if (!lockButton.disabled && typeof locked === "boolean") send("/api/controls/cable-lock", { locked: !locked });
+  });
 })();

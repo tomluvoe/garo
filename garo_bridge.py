@@ -84,6 +84,8 @@ CONNECTOR_ALERTS = {
     "CP_FAULT": "Control pilot fault",
     "CP_SHORTED": "Control pilot shorted",
 }
+# Operating modes the dashboard can select; firmware may report SCHEDULE for SCHEMA.
+CONTROL_MODES = ("ALWAYS_ON", "SCHEMA", "ALWAYS_OFF")
 MODE_LABELS = {
     "ALWAYS_ON": "Available for charging",
     "ALWAYS_OFF": "Charging disabled",
@@ -136,8 +138,10 @@ def reported_controls(raw):
     mode = raw.get("mode")
     main = raw.get("mainCharger")
     lock_mode = main.get("cableLockMode") if isinstance(main, dict) and main.get("serialNumber") == raw["serialNumber"] else None
+    mode = mode if isinstance(mode, str) else None
     return {
-        "available": {"ALWAYS_ON": True, "ALWAYS_OFF": False}.get(mode) if isinstance(mode, str) else None,
+        "available": {"ALWAYS_ON": True, "ALWAYS_OFF": False}.get(mode),
+        "mode": "SCHEMA" if mode == "SCHEDULE" else mode if mode in CONTROL_MODES else None,
         "locked": lock_mode != 0 if type(lock_mode) is int and lock_mode in (0, 1, 2) else None,
     }
 
@@ -360,6 +364,9 @@ class ChargerClient:
     def set_cable_lock(self, locked):
         return self._set_control("locked", locked)
 
+    def set_mode(self, mode):
+        return self._set_control("mode", mode)
+
     def _control_request(self, field, desired, raw):
         config, _ = self._request_json(CONFIG_PATH)
         if not isinstance(config, dict) or config.get("serialNumber") != self.serial:
@@ -370,11 +377,13 @@ class ChargerClient:
         matching = [outlet for outlet in slaves if isinstance(outlet, dict) and outlet.get("serialNumber") == self.serial]
         if len(matching) != 1:
             raise ControlRejected("The configured outlet could not be uniquely identified.")
-        if field == "available":
+        if field in ("available", "mode"):
             if config.get("master") is not True or len(slaves) != 1 or config.get("twinSerial", 0) not in (-1, 0):
                 raise ControlRejected("Availability control is supported for a single locally managed charger.")
             if raw.get("mode") not in ("ALWAYS_ON", "ALWAYS_OFF", "SCHEMA", "SCHEDULE"):
                 raise ControlRejected("The charger did not report a supported availability mode.")
+            if field == "mode":
+                return MODE_PATH + desired, None
             return MODE_PATH + ("ALWAYS_ON" if desired else "ALWAYS_OFF"), None
         product = config.get("productId")
         version, revision = config.get("firmwareVersion"), config.get("firmwareRevision")
@@ -388,14 +397,17 @@ class ChargerClient:
     def _set_control(self, field, desired):
         if self.sample:
             raise ControlRejected("Charger controls are unavailable in sample mode.")
-        if type(desired) is not bool:
+        if field == "mode":
+            if desired not in CONTROL_MODES:
+                raise ControlRejected("The requested mode must be one of " + ", ".join(CONTROL_MODES) + ".")
+        elif type(desired) is not bool:
             raise ControlRejected("The requested state must be a boolean.")
         with self.lock:
             sent = False
             try:
                 raw, source = self._fetch()
                 path, payload = self._control_request(field, desired, raw)
-                changed = reported_controls(raw)[field] is not desired
+                changed = reported_controls(raw)[field] != desired
                 if changed:
                     self.cached = self.last_attempt = self.last_error = None
                     sent = True
@@ -406,7 +418,7 @@ class ChargerClient:
                         if delay:
                             time.sleep(delay)
                         raw, source = self._fetch()
-                        if reported_controls(raw)[field] is desired:
+                        if reported_controls(raw)[field] == desired:
                             break
                     else:
                         raise ChargerError("The charger did not confirm the requested state. Refresh status before retrying.")
@@ -585,6 +597,7 @@ def dashboard_handler(client, browser_port=None, refresh_seconds=DEFAULT_REFRESH
     actions = {
         "/api/controls/availability": ("available", client.set_availability),
         "/api/controls/cable-lock": ("locked", client.set_cable_lock),
+        "/api/controls/mode": ("mode", client.set_mode),
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -658,7 +671,11 @@ def dashboard_handler(client, browser_port=None, refresh_seconds=DEFAULT_REFRESH
             except (ValueError, RecursionError):
                 return self.respond_json(400, {"error": "Expected a small JSON request body."})
             field, action = actions[self.path]
-            if not isinstance(data, dict) or set(data) != {field} or type(data[field]) is not bool:
+            if not isinstance(data, dict) or set(data) != {field}:
+                return self.respond_json(400, {"error": f"Provide only {field}."})
+            if field == "mode" and data[field] not in CONTROL_MODES:
+                return self.respond_json(400, {"error": "Provide mode as " + ", ".join(CONTROL_MODES) + "."})
+            if field != "mode" and type(data[field]) is not bool:
                 return self.respond_json(400, {"error": f"Provide a boolean {field}."})
             try:
                 self.respond_json(200, action(data[field]))
