@@ -1,0 +1,38 @@
+services:
+  dashboard:
+    image: garo:local
+    pull_policy: never
+    build: .
+    environment:
+      GARO_CHARGER_HOST: "${GARO_CHARGER_HOST:?Set GARO_CHARGER_HOST in .env}"
+      GARO_CHARGER_PORT: "${GARO_CHARGER_PORT:-8080}"
+      GARO_CHARGER_SERIAL: "${GARO_CHARGER_SERIAL:?Set GARO_CHARGER_SERIAL in .env}"
+    command:
+      - dashboard
+      - --listen-host
+      - "0.0.0.0"
+      - --browser-port
+      - "${GARO_DASHBOARD_PORT:-8765}"
+    ports:
+      - "127.0.0.1:${GARO_DASHBOARD_PORT:-8765}:8765"
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          from urllib.request import Request, urlopen;
+          urlopen(Request("http://127.0.0.1:8765/healthz",
+          headers={"Host": "127.0.0.1:${GARO_DASHBOARD_PORT:-8765}"}), timeout=2).close()
+      interval: 30s
+      start_period: 5s
+      start_interval: 1s
+      timeout: 3s
+      retries: 3

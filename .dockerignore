@@ -1,0 +1,8 @@
+*
+!Dockerfile
+!garo_bridge.py
+!requirements-mcp.txt
+!dashboard/
+!dashboard/index.html
+!dashboard/app.js
+!dashboard/style.css

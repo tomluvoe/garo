@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#122827">
+  <title>GARO charging dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <span class="wordmark">GARO</span>
+      <span class="read-only">Read-only dashboard</span>
+    </header>
+    <main>
+      <div class="heading">
+        <div>
+          <h1>Charger overview</h1>
+          <p id="charger-name" class="subtle" hidden></p>
+        </div>
+        <button id="refresh" type="button">Refresh status</button>
+      </div>
+      <p id="sample-banner" class="sample-banner" hidden>Sample preview from a local JSON file.</p>
+      <noscript><p class="notice">Enable JavaScript to load charger status.</p></noscript>
+      <section class="overview" aria-labelledby="state">
+        <div class="overview-copy">
+          <p class="section-label">Connector status</p>
+          <h2 id="state" aria-live="polite" aria-atomic="true">Connecting…</h2>
+          <p id="state-detail" class="state-detail">Requesting charger status.</p>
+          <p id="mode" class="mode" hidden></p>
+        </div>
+        <dl class="overview-details">
+          <div><dt>Data source</dt><dd id="connection-state">Connecting</dd></div>
+          <div><dt>API response</dt><dd id="updated">—</dd></div>
+          <div><dt>Controller freshness</dt><dd id="freshness">Unverified</dd></div>
+        </dl>
+      </section>
+      <section class="metrics" aria-label="Reported readings">
+        <article class="metric">
+          <h2>Reported power</h2>
+          <p id="power" class="value">—</p>
+          <p id="power-note" class="metric-note">Awaiting status</p>
+        </article>
+        <article class="metric">
+          <h2>Session energy</h2>
+          <p id="energy" class="value">—</p>
+          <p class="metric-note">Latest reported session</p>
+        </article>
+        <article class="metric">
+          <h2>Current limit</h2>
+          <p id="limit" class="value">—</p>
+          <p id="pilot" class="metric-note">Awaiting pilot current</p>
+        </article>
+        <article class="metric">
+          <h2>Temperature</h2>
+          <p id="temperature" class="value">—</p>
+          <p class="metric-note">Reported by charger</p>
+        </article>
+      </section>
+      <section id="notice" class="notice" hidden aria-labelledby="notice-title">
+        <h2 id="notice-title">Reading notes</h2>
+        <ul id="warnings"></ul>
+      </section>
+      <div class="lower-grid">
+        <section class="panel" aria-labelledby="meter-title">
+          <h2 id="meter-title">Meter, session and limits</h2>
+          <dl class="rows">
+            <div><dt>Reported current</dt><dd id="current">—</dd></div>
+            <div><dt>Reported phases</dt><dd id="phases">—</dd></div>
+            <div><dt>Total metered energy</dt><dd id="total">—</dd></div>
+            <div><dt>Session started</dt><dd id="session-start">—</dd></div>
+            <div><dt>Session duration</dt><dd id="duration">—</dd></div>
+            <div><dt>Hardware switch limit</dt><dd id="switch-limit">—</dd></div>
+            <div><dt>Factory limit</dt><dd id="factory-limit">—</dd></div>
+          </dl>
+        </section>
+        <section class="panel" aria-labelledby="source-title">
+          <h2 id="source-title">Source details</h2>
+          <dl class="rows">
+            <div><dt>Controller timestamp</dt><dd id="last-contact">—</dd></div>
+            <div><dt>Controller online flag</dt><dd id="online-flag">—</dd></div>
+            <div><dt>Firmware connector code</dt><dd id="connector-code">—</dd></div>
+            <div id="endpoint-row" hidden><dt>Charger address</dt><dd id="endpoint"></dd></div>
+          </dl>
+          <a id="original" class="original-link" target="_blank" rel="noopener noreferrer" hidden>Open original GARO interface (new tab)</a>
+        </section>
+      </div>
+      <details class="raw">
+        <summary>Inspect raw status response</summary>
+        <pre id="raw">No data received.</pre>
+      </details>
+    </main>
+    <footer>Refreshes every 10 seconds while this tab is visible.</footer>
+  </div>
+</body>
+</html>
