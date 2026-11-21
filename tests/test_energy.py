@@ -115,8 +115,8 @@ class EnergyAPITests(unittest.TestCase):
             "chargeboxSerial": str(SAMPLE_SERIAL), "year": "2024", "month": "2",
             "meterSerial": "DEFAULT", "resolution": "DAY",
         })])
-        saved_at, raw = self.client.energy_cache[(2024, 2)]
-        self.client.energy_cache[(2024, 2)] = (saved_at - bridge.CACHE_SECONDS - 1, raw)
+        saved_at, raw, received_at = self.client.energy_cache[(2024, 2)]
+        self.client.energy_cache[(2024, 2)] = (saved_at - bridge.CACHE_SECONDS - 1, raw, received_at)
         self.assertEqual(self.read_history(), result)
         self.assertEqual(len(self.seen), 1)
         self.assertEqual(self.read_history(query="&refresh=1"), result)

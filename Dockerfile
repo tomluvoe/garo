@@ -7,8 +7,10 @@ WORKDIR /app
 COPY requirements-mcp.txt ./
 RUN python -m pip install --no-cache-dir --disable-pip-version-check -r requirements-mcp.txt
 
-COPY garo_bridge.py ./
+COPY garo_bridge.py garo_archive.py ./
 COPY dashboard/ ./dashboard/
+
+RUN install -d -m 0700 -o 10001 -g 10001 /data
 
 USER 10001:10001
 EXPOSE 8765

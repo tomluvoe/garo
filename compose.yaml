@@ -15,10 +15,19 @@ services:
       - "${GARO_DASHBOARD_PORT:-8765}"
       - --refresh-seconds
       - "${GARO_DASHBOARD_REFRESH_SECONDS:-60}"
+      - --energy-archive
+      - /data/energy.sqlite3
+      - --energy-timezone
+      - "${GARO_ENERGY_TIMEZONE:-UTC}"
+      - --energy-interval-seconds
+      - "${GARO_ENERGY_INTERVAL_SECONDS:-3600}"
     ports:
       - "127.0.0.1:${GARO_DASHBOARD_PORT:-8765}:8765"
     init: true
     read_only: true
+    stop_signal: SIGINT
+    volumes:
+      - energy-data:/data
     cap_drop:
       - ALL
     security_opt:
@@ -38,3 +47,6 @@ services:
       start_interval: 1s
       timeout: 3s
       retries: 3
+
+volumes:
+  energy-data:

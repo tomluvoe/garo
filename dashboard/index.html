@@ -64,7 +64,7 @@
         <h2 id="notice-title">Reading notes</h2>
         <ul id="warnings"></ul>
       </section>
-      <details class="panel energy-panel" id="energy-history">
+      <details class="panel energy-panel" id="energy-history" data-energy-timezone="">
         <summary>Energy history</summary>
         <div class="energy-controls">
           <label for="energy-month">Month
@@ -76,6 +76,8 @@
           <button id="energy-reload" type="button">Refresh history</button>
         </div>
         <p id="energy-meter-warning" class="notice" hidden>The charger reports a meter connection problem.</p>
+        <p id="energy-archive-note" class="energy-message" hidden></p>
+        <p id="energy-refresh-warning" class="notice" role="status" hidden></p>
         <p id="energy-message" class="energy-message" role="status"></p>
         <div id="energy-results" hidden>
           <dl class="energy-totals">
