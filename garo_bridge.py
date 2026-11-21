@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only GARO dashboard and local MCP adapter."""
+"""Local GARO dashboard and MCP adapter."""
 import argparse
 import asyncio
 from collections import OrderedDict
@@ -29,6 +29,17 @@ ROOT = Path(__file__).resolve().parent
 DEVICE_ENV = ("GARO_CHARGER_HOST", "GARO_CHARGER_PORT", "GARO_CHARGER_SERIAL")
 STATUS_PATH = "/servlet/rest/chargebox/status"
 ENERGY_PATH = "/servlet/rest/chargebox/energy"
+CONFIG_PATH = "/servlet/rest/chargebox/config"
+MODE_PATH = "/servlet/rest/chargebox/mode/"
+CABLE_LOCK_PATH = "/servlet/rest/chargebox/cablelock"
+CONTROL_READBACK_DELAYS = (0, 0.5, 1)
+# Product IDs whose entries in the firmware interface advertise an outlet.
+OUTLET_PRODUCTS = frozenset({
+    3, 6, 9, 12, 15, 16, 19, 22, 25, 26, 27, 30, 33, 34, 35, 36, 37, 38, 39, 40,
+    41, 42, 43, 45, 46, 49, 51, 52, 55, 56, 59, 62, 66, 67, 69, 70, 72, 73, 78,
+    79, 80, 86, 88, 92, 93, 94, 96, 98, 99, 100, 101, 103, 104, 107, 108, 110,
+    113, 114, 122,
+})
 MAX_BYTES = 1024 * 1024
 CACHE_SECONDS = 5
 ENERGY_CACHE_SECONDS = 300
@@ -41,6 +52,7 @@ MAX_REFRESH_SECONDS = (2**31 - 1) // 1000
 DASHBOARD_ASSETS = {
     "/": ("index.html", "text/html"),
     "/app.js": ("app.js", "application/javascript"),
+    "/controls.js": ("controls.js", "application/javascript"),
     "/energy.js": ("energy.js", "application/javascript"),
     "/style.css": ("style.css", "text/css"),
 }
@@ -84,6 +96,10 @@ class ChargerError(Exception):
     pass
 
 
+class ControlRejected(ChargerError):
+    pass
+
+
 def number(value):
     try:
         if type(value) in (int, float) and math.isfinite(value):
@@ -114,6 +130,16 @@ def charger_identity(raw):
     if not isinstance(connector, str) or not connector.strip():
         raise ChargerError("GARO status is missing its connector state.")
     return raw["serialNumber"], connector
+
+
+def reported_controls(raw):
+    mode = raw.get("mode")
+    main = raw.get("mainCharger")
+    lock_mode = main.get("cableLockMode") if isinstance(main, dict) and main.get("serialNumber") == raw["serialNumber"] else None
+    return {
+        "available": {"ALWAYS_ON": True, "ALWAYS_OFF": False}.get(mode) if isinstance(mode, str) else None,
+        "locked": lock_mode != 0 if type(lock_mode) is int and lock_mode in (0, 1, 2) else None,
+    }
 
 
 def normalize(raw, source, now=None):
@@ -170,6 +196,7 @@ def normalize(raw, source, now=None):
         "connector_alert": connector in CONNECTOR_ALERTS,
         "mode": mode,
         "mode_label": MODE_LABELS.get(mode),
+        "controls": reported_controls(raw),
         "reported_charging": charging,
         "freshness": {
             "status": freshness, "controller_last_contact_utc": iso(contact),
@@ -309,22 +336,96 @@ class ChargerClient:
             raise ChargerError("Serial mismatch: expected {}, received {}.".format(self.serial, serial))
         return raw, self.source(received_at)
 
-    def _request_json(self, path, payload=None):
+    def _request_json(self, path, payload=None, *, method=None, allow_empty=False):
         headers = {
             "Accept": "application/json", "Cache-Control": "no-cache, no-store", "Pragma": "no-cache",
             "User-Agent": "GARO-local-bridge/0.1.0",
         }
         body = None
-        if payload is not None:
+        if payload is not None or method == "POST":
             headers["Content-Type"] = "application/json"
+        if payload is not None:
             body = json.dumps(payload).encode()
-        request = Request(self.base + path, data=body, headers=headers)
+        request = Request(self.base + path, data=body, headers=headers, method=method)
         with self.opener.open(request, timeout=self.timeout) as response:
             body = response.read(MAX_BYTES + 1)
             if response.length and len(body) <= MAX_BYTES:
                 raise ChargerError("The charger closed the connection before sending a complete response.")
             received_at = datetime.now(timezone.utc)
-        return decode_charger_json(body), received_at
+        return (None if allow_empty and not body else decode_charger_json(body)), received_at
+
+    def set_availability(self, available):
+        return self._set_control("available", available)
+
+    def set_cable_lock(self, locked):
+        return self._set_control("locked", locked)
+
+    def _control_request(self, field, desired, raw):
+        config, _ = self._request_json(CONFIG_PATH)
+        if not isinstance(config, dict) or config.get("serialNumber") != self.serial:
+            raise ControlRejected("The configuration did not identify the configured charger.")
+        slaves = config.get("slaveList")
+        if not isinstance(slaves, list):
+            raise ControlRejected("The charger did not report its outlet configuration.")
+        matching = [outlet for outlet in slaves if isinstance(outlet, dict) and outlet.get("serialNumber") == self.serial]
+        if len(matching) != 1:
+            raise ControlRejected("The configured outlet could not be uniquely identified.")
+        if field == "available":
+            if config.get("master") is not True or len(slaves) != 1 or config.get("twinSerial", 0) not in (-1, 0):
+                raise ControlRejected("Availability control is supported for a single locally managed charger.")
+            if raw.get("mode") not in ("ALWAYS_ON", "ALWAYS_OFF", "SCHEMA", "SCHEDULE"):
+                raise ControlRejected("The charger did not report a supported availability mode.")
+            return MODE_PATH + ("ALWAYS_ON" if desired else "ALWAYS_OFF"), None
+        product = config.get("productId")
+        version, revision = config.get("firmwareVersion"), config.get("firmwareRevision")
+        if (type(product) is not int or product not in OUTLET_PRODUCTS
+                or type(version) is not int or type(revision) is not int or (version, revision) < (7, 5)
+                or reported_controls(raw)["locked"] is None):
+            raise ControlRejected("Cable locking is unavailable for this charger or firmware.")
+        # Match the firmware UI by changing the configured outlet's lock field in its original record.
+        return CABLE_LOCK_PATH, dict(matching[0], cableLockMode=int(desired))
+
+    def _set_control(self, field, desired):
+        if self.sample:
+            raise ControlRejected("Charger controls are unavailable in sample mode.")
+        if type(desired) is not bool:
+            raise ControlRejected("The requested state must be a boolean.")
+        with self.lock:
+            sent = False
+            try:
+                raw, source = self._fetch()
+                path, payload = self._control_request(field, desired, raw)
+                changed = reported_controls(raw)[field] is not desired
+                if changed:
+                    self.cached = self.last_attempt = self.last_error = None
+                    sent = True
+                    reply, _ = self._request_json(path, payload, method="POST", allow_empty=True)
+                    if reply is False or (isinstance(reply, dict) and reply.get("success") is False):
+                        raise ControlRejected("The charger refused the requested change.")
+                    for delay in CONTROL_READBACK_DELAYS:
+                        if delay:
+                            time.sleep(delay)
+                        raw, source = self._fetch()
+                        if reported_controls(raw)[field] is desired:
+                            break
+                    else:
+                        raise ChargerError("The charger did not confirm the requested state. Refresh status before retrying.")
+                self.cached = (raw, source)
+                self.last_attempt = time.monotonic()
+                self.last_error = None
+                return {"status": normalize(raw, source), "raw": raw, "changed": changed}
+            except ControlRejected:
+                raise
+            except HTTPError as exc:
+                if exc.code in (404, 405):
+                    raise ControlRejected("The charger does not support this control.") from exc
+                if sent and exc.code in (400, 403, 409, 422, 423):
+                    raise ControlRejected("The charger refused the requested change.") from exc
+                message = "The charger command could not be confirmed." if sent else "Could not read the charger before making a change."
+                raise ChargerError(message) from exc
+            except (OSError, ValueError, HTTPException, RecursionError) as exc:
+                message = "The charger command could not be confirmed." if sent else "Could not read the charger before making a change."
+                raise ChargerError(message) from exc
 
     def energy_history(self, year, month, zone, refresh=False, *, include_observation=False):
         if self.sample:
@@ -379,12 +480,13 @@ def create_mcp(client):
     try:
         from mcp.server.fastmcp import FastMCP
         from mcp.types import ToolAnnotations
+        from pydantic import StrictBool
     except ImportError:
         raise ChargerError("MCP requires Python 3.10+ and mcp==1.29.0. Install requirements-mcp.txt in a virtual environment.")
     server = FastMCP("garo-local", instructions=(
-        "Read-only GARO integration. Always present connector state alongside freshness warnings. "
+        "Local GARO integration. Always present connector state alongside freshness warnings. "
         "Positive retained power readings do not prove active charging. Sample data is never live. "
-        "Clock checks are advisory; mainCharger.online is an opaque controller flag. No writes are available."
+        "Apply controls only when requested. Cable lock readback describes the configured setting."
     ), log_level="WARNING")
     annotations = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 
@@ -399,6 +501,21 @@ def create_mcp(client):
         """Read normalized status and the original GARO JSON. Does not change settings or reset the charger."""
         status, raw = await asyncio.to_thread(client.snapshot)
         return {"status": status, "raw": raw}
+
+    if not client.sample:
+        writes = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True)
+
+        @server.tool(annotations=writes, structured_output=True)
+        async def set_charger_availability(available: StrictBool) -> dict[str, Any]:
+            """Set the charger available or unavailable and verify its reported operating mode."""
+            result = await asyncio.to_thread(client.set_availability, available)
+            return {"changed": result["changed"], "available": result["status"]["controls"]["available"]}
+
+        @server.tool(annotations=writes, structured_output=True)
+        async def set_cable_lock(locked: StrictBool) -> dict[str, Any]:
+            """Set the outlet cable lock and verify the reported setting."""
+            result = await asyncio.to_thread(client.set_cable_lock, locked)
+            return {"changed": result["changed"], "locked": result["status"]["controls"]["locked"]}
 
     return server
 
@@ -465,9 +582,13 @@ class ArchivedEnergy:
 
 def dashboard_handler(client, browser_port=None, refresh_seconds=DEFAULT_REFRESH_SECONDS, archived_energy=None):
     refresh_value = str(refresh_seconds).encode("ascii")
+    actions = {
+        "/api/controls/availability": ("available", client.set_availability),
+        "/api/controls/cable-lock": ("locked", client.set_cable_lock),
+    }
 
     class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
+        def local_origin(self, *, required=False):
             port = browser_port if browser_port is not None else self.server.server_port
             hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
             if port == 80:
@@ -475,9 +596,12 @@ def dashboard_handler(client, browser_port=None, refresh_seconds=DEFAULT_REFRESH
             host = self.headers.get("Host")
             origins = self.headers.get_all("Origin", [])
             if host not in hosts or len(self.headers.get_all("Host", [])) != 1:
-                return self.respond(403, b"Host or Origin rejected.", "text/plain")
+                return False
             authority = host.removesuffix(":80") if port == 80 else host
-            if origins and origins != [f"http://{authority}"]:
+            return origins == [f"http://{authority}"] if origins or required else True
+
+        def do_GET(self):
+            if not self.local_origin():
                 return self.respond(403, b"Host or Origin rejected.", "text/plain")
             path, _, query = self.path.partition("?")
             if path == "/healthz":
@@ -516,7 +640,32 @@ def dashboard_handler(client, browser_port=None, refresh_seconds=DEFAULT_REFRESH
         do_HEAD = do_GET
 
         def do_POST(self):
-            self.respond(405, b"Read-only interface.", "text/plain")
+            if self.path not in actions:
+                return self.respond(405, b"Method not allowed.", "text/plain")
+            if not self.local_origin(required=True):
+                return self.respond_json(403, {"error": "Host or Origin rejected."})
+            if len(self.headers.get_all("Content-Type", [])) != 1 or self.headers.get_content_type() != "application/json":
+                return self.respond_json(415, {"error": "Expected application/json."})
+            lengths = self.headers.get_all("Content-Length", [])
+            try:
+                if len(lengths) != 1 or self.headers.get("Transfer-Encoding") or not 1 <= int(lengths[0]) <= 256:
+                    raise ValueError
+                length = int(lengths[0])
+                body = self.rfile.read(length)
+                if len(body) != length:
+                    raise ValueError
+                data = json.loads(body)
+            except (ValueError, RecursionError):
+                return self.respond_json(400, {"error": "Expected a small JSON request body."})
+            field, action = actions[self.path]
+            if not isinstance(data, dict) or set(data) != {field} or type(data[field]) is not bool:
+                return self.respond_json(400, {"error": f"Provide a boolean {field}."})
+            try:
+                self.respond_json(200, action(data[field]))
+            except ControlRejected as exc:
+                self.respond_json(409, {"error": str(exc)})
+            except ChargerError as exc:
+                self.respond_json(502, {"error": str(exc)})
 
         def respond_json(self, code, data):
             self.respond(code, json.dumps(data, allow_nan=False).encode(), "application/json")
@@ -648,7 +797,7 @@ def main():
             collector = None
             print("GARO dashboard: http://127.0.0.1:{}/".format(args.browser_port or args.listen_port), flush=True)
             mode = "sample data" if args.sample else "live charger"
-            print(f"Read-only {mode}. Ctrl+C to stop.", flush=True)
+            print(f"Dashboard using {mode}. Ctrl+C to stop.", flush=True)
             try:
                 if archived_energy:
                     collector = threading.Thread(

@@ -181,7 +181,7 @@ class DashboardTests(unittest.TestCase):
         cls.worker.join()
 
     def test_html_assets_and_api(self):
-        for path in ["/", "/app.js", "/energy.js", "/style.css"]:
+        for path in ["/", "/app.js", "/controls.js", "/energy.js", "/style.css"]:
             with urlopen(self.base + path) as response:
                 self.assertEqual(response.status, 200)
                 self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
