@@ -1,6 +1,7 @@
 *
 !Dockerfile
 !garo_bridge.py
+!garo_archive.py
 !requirements-mcp.txt
 !dashboard/
 !dashboard/index.html

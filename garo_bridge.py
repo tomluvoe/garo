@@ -2,17 +2,18 @@
 """Read-only GARO dashboard and local MCP adapter."""
 import argparse
 import asyncio
-import calendar
 from collections import OrderedDict
 import copy
 import ipaddress
 import json
 import math
 import os
-from datetime import date, datetime, timezone
+from datetime import datetime, timedelta, timezone
+from html import escape
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import sqlite3
 import sys
 import threading
 import time
@@ -20,7 +21,9 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import parse_qs
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from garo_archive import EnergyArchive, energy_month
 
 ROOT = Path(__file__).resolve().parent
 DEVICE_ENV = ("GARO_CHARGER_HOST", "GARO_CHARGER_PORT", "GARO_CHARGER_SERIAL")
@@ -30,6 +33,8 @@ MAX_BYTES = 1024 * 1024
 CACHE_SECONDS = 5
 ENERGY_CACHE_SECONDS = 300
 ENERGY_CACHE_MONTHS = 12
+DEFAULT_ENERGY_INTERVAL_SECONDS = 3600
+ENERGY_LOOKBACK_DAYS = 7
 FIRST_ENERGY_YEAR = 2017
 DEFAULT_REFRESH_SECONDS = 60
 MAX_REFRESH_SECONDS = (2**31 - 1) // 1000
@@ -251,19 +256,12 @@ def normalize_energy(raw, serial, year, month, zone):
         if instant is None or energy is None or energy < 0:
             raise ChargerError("Energy history contained an invalid daily reading.")
         day = instant.astimezone(zone).date()
-        if (day.year, day.month) != (year, month) or day in readings:
+        key = day.isoformat()
+        if (day.year, day.month) != (year, month) or key in readings:
             raise ChargerError("Energy history contained a duplicate or out-of-month reading.")
-        readings[day] = energy
-    if not readings:
-        return {"state": "empty"}
-    days = [date(year, month, d) for d in range(1, calendar.monthrange(year, month)[1] + 1)]
+        readings[key] = energy
     meter = number(raw.get("stopValue"))
-    return {
-        "state": "available",
-        "days": [{"date": day.isoformat(), "kwh": readings.get(day)} for day in days],
-        "total_kwh": math.fsum(readings.values()),
-        "meter_kwh": meter if meter is not None and meter >= 0 else None,
-    }
+    return energy_month(year, month, readings, meter if meter is not None and meter >= 0 else None)
 
 
 def local_host(value):
@@ -328,7 +326,7 @@ class ChargerClient:
             received_at = datetime.now(timezone.utc)
         return decode_charger_json(body), received_at
 
-    def energy_history(self, year, month, zone, refresh=False):
+    def energy_history(self, year, month, zone, refresh=False, *, include_observation=False):
         if self.sample:
             return {"state": "unavailable", "message": "Energy history is unavailable in sample mode."}
         key = (year, month)
@@ -340,11 +338,11 @@ class ChargerClient:
                     raw = entry[1]
                 else:
                     # The firmware exposes this read-only query as a POST.
-                    raw, _ = self._request_json(ENERGY_PATH, {
+                    raw, received_at = self._request_json(ENERGY_PATH, {
                         "chargeboxSerial": str(self.serial), "year": str(year), "month": str(month),
                         "meterSerial": "DEFAULT", "resolution": "DAY",
                     })
-                    entry = (time.monotonic(), raw)
+                    entry = (time.monotonic(), raw, received_at)
                 result = normalize_energy(raw, self.serial, year, month, zone)
             except HTTPError as exc:
                 if exc.code in (404, 405):
@@ -355,6 +353,10 @@ class ChargerClient:
             self.energy_cache[key] = entry
             if len(self.energy_cache) > ENERGY_CACHE_MONTHS:
                 self.energy_cache.popitem(last=False)
+            if include_observation and result["state"] == "available":
+                meter = raw.get("meterSerial")
+                result["meter_serial"] = (meter.strip() or "DEFAULT") if isinstance(meter, str) else "DEFAULT"
+                result["observed_at_utc"] = entry[2].isoformat(timespec="microseconds")
             return result
 
     def snapshot(self):
@@ -401,7 +403,67 @@ def create_mcp(client):
     return server
 
 
-def dashboard_handler(client, browser_port=None, refresh_seconds=DEFAULT_REFRESH_SECONDS):
+class ArchivedEnergy:
+    def __init__(self, client, archive):
+        self.client = client
+        self.archive = archive
+
+    def collect_month(self, year, month, refresh):
+        history = self.client.energy_history(
+            year, month, self.archive.zone, refresh=refresh, include_observation=True
+        )
+        self.archive.record(history)
+        return history
+
+    def collect_recent(self, today=None):
+        today = today or datetime.now(self.archive.zone).date()
+        first = today - timedelta(days=ENERGY_LOOKBACK_DAYS)
+        months = dict.fromkeys(((first.year, first.month), (today.year, today.month)))
+        success = True
+        for year, month in months:
+            try:
+                result = self.collect_month(year, month, refresh=True)
+                if result["state"] == "unavailable":
+                    raise ChargerError(result["message"])
+            except (ChargerError, OSError, sqlite3.Error) as exc:
+                print(f"Energy collection for {year:04}-{month:02} failed: {exc}", file=sys.stderr)
+                success = False
+        if success:
+            self.archive.mark_collection()
+        return success
+
+    def run(self, stop, seconds):
+        while not stop.is_set():
+            try:
+                success = self.collect_recent()
+            except (OSError, sqlite3.Error) as exc:
+                print(f"Energy collection could not update the archive: {exc}", file=sys.stderr)
+                success = False
+            stop.wait(seconds if success else min(seconds, ENERGY_CACHE_SECONDS))
+
+    def history(self, year, month, refresh):
+        saved = self.archive.history(year, month)
+        if saved["state"] == "available" and not refresh:
+            return saved
+        try:
+            result = self.collect_month(year, month, refresh)
+        except ChargerError as exc:
+            saved = self.archive.history(year, month)
+            if saved["state"] == "available":
+                saved["notice"] = "Could not refresh from the charger. Showing saved readings."
+            else:
+                saved.update(state="unavailable", message=str(exc))
+            return saved
+        saved = self.archive.history(year, month)
+        if result["state"] == "unavailable":
+            if saved["state"] == "available":
+                saved["notice"] = "Charger history is unavailable. Showing saved readings."
+            else:
+                saved.update(result)
+        return saved
+
+
+def dashboard_handler(client, browser_port=None, refresh_seconds=DEFAULT_REFRESH_SECONDS, archived_energy=None):
     refresh_value = str(refresh_seconds).encode("ascii")
 
     class Handler(BaseHTTPRequestHandler):
@@ -432,9 +494,13 @@ def dashboard_handler(client, browser_port=None, refresh_seconds=DEFAULT_REFRESH
                 except ValueError as exc:
                     return self.respond_json(400, {"error": str(exc)})
                 try:
+                    if archived_energy:
+                        return self.respond_json(200, archived_energy.history(year, month, refresh))
                     return self.respond_json(200, client.energy_history(year, month, zone, refresh))
                 except ChargerError as exc:
                     return self.respond_json(502, {"error": str(exc)})
+                except sqlite3.Error:
+                    return self.respond_json(502, {"error": "Could not access the local energy archive."})
             if path not in DASHBOARD_ASSETS:
                 return self.respond(404, b"Not found", "text/plain")
             filename, mime = DASHBOARD_ASSETS[path]
@@ -442,6 +508,9 @@ def dashboard_handler(client, browser_port=None, refresh_seconds=DEFAULT_REFRESH
             if path == "/":
                 body = body.replace(b"__REFRESH_SECONDS__", refresh_value)
                 body = body.replace(b"__FIRST_ENERGY_YEAR__", str(FIRST_ENERGY_YEAR).encode("ascii"))
+                if archived_energy:
+                    zone_attribute = f'data-energy-timezone="{escape(archived_energy.archive.zone.key)}"'.encode()
+                    body = body.replace(b'data-energy-timezone=""', zone_attribute)
             self.respond(200, body, mime)
 
         do_HEAD = do_GET
@@ -521,6 +590,12 @@ def main():
         "--refresh-seconds", type=int, default=DEFAULT_REFRESH_SECONDS,
         help=f"Dashboard refresh interval in seconds (default {DEFAULT_REFRESH_SECONDS})",
     )
+    parser.add_argument("--energy-archive", type=Path, help="SQLite path for the dashboard energy archive")
+    parser.add_argument("--energy-timezone", default="UTC", help="Time zone for archived daily readings (default UTC)")
+    parser.add_argument(
+        "--energy-interval-seconds", type=int, default=DEFAULT_ENERGY_INTERVAL_SECONDS,
+        help=f"Background energy collection interval (default {DEFAULT_ENERGY_INTERVAL_SECONDS})",
+    )
     args = parser.parse_args()
     if args.docker and args.command != "config":
         parser.error("--docker is used with the config command.")
@@ -529,6 +604,8 @@ def main():
         parser.error("Ports must be between 1 and 65535.")
     if not CACHE_SECONDS <= args.refresh_seconds <= MAX_REFRESH_SECONDS:
         parser.error(f"--refresh-seconds must be between {CACHE_SECONDS} and {MAX_REFRESH_SECONDS}.")
+    if not CACHE_SECONDS <= args.energy_interval_seconds <= threading.TIMEOUT_MAX:
+        parser.error(f"--energy-interval-seconds must be between {CACHE_SECONDS} and {int(threading.TIMEOUT_MAX)}.")
     try:
         if args.command == "config":
             print(json.dumps(mcp_config(args), indent=2))
@@ -554,20 +631,39 @@ def main():
         elif args.command == "status":
             print(json.dumps(client.snapshot()[0], indent=2, allow_nan=False))
         else:
+            archived_energy = None
+            if args.energy_archive and not args.sample:
+                try:
+                    zone = ZoneInfo(args.energy_timezone)
+                except (ZoneInfoNotFoundError, ValueError):
+                    parser.error("--energy-timezone must be a valid IANA time zone.")
+                archive = EnergyArchive(args.energy_archive, client.serial, zone)
+                archived_energy = ArchivedEnergy(client, archive)
             server = ThreadingHTTPServer(
                 (args.listen_host, args.listen_port),
-                dashboard_handler(client, browser_port=args.browser_port, refresh_seconds=args.refresh_seconds),
+                dashboard_handler(client, browser_port=args.browser_port, refresh_seconds=args.refresh_seconds,
+                                  archived_energy=archived_energy),
             )
+            stop = threading.Event()
+            collector = None
             print("GARO dashboard: http://127.0.0.1:{}/".format(args.browser_port or args.listen_port), flush=True)
             mode = "sample data" if args.sample else "live charger"
             print(f"Read-only {mode}. Ctrl+C to stop.", flush=True)
             try:
+                if archived_energy:
+                    collector = threading.Thread(
+                        target=archived_energy.run, args=(stop, args.energy_interval_seconds), daemon=True
+                    )
+                    collector.start()
                 server.serve_forever()
             except KeyboardInterrupt:
                 pass
             finally:
+                stop.set()
                 server.server_close()
-    except (ChargerError, OSError, argparse.ArgumentTypeError) as exc:
+                if collector:
+                    collector.join(timeout=10)
+    except (ChargerError, OSError, sqlite3.Error, ValueError, argparse.ArgumentTypeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     return 0

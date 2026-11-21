@@ -6,6 +6,8 @@
   const year = document.getElementById("energy-year");
   const reload = document.getElementById("energy-reload");
   const message = document.getElementById("energy-message");
+  const archiveNote = document.getElementById("energy-archive-note");
+  const refreshWarning = document.getElementById("energy-refresh-warning");
   const results = document.getElementById("energy-results");
   const scale = document.getElementById("energy-scale");
   const bars = document.getElementById("energy-bars");
@@ -13,18 +15,34 @@
   const number = new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 });
   const date = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeZone: "UTC" });
   const monthName = new Intl.DateTimeFormat(undefined, { month: "long", timeZone: "UTC" });
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const now = new Date();
+  const timeZone = panel.dataset.energyTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const collectionTime = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short", timeZone });
+  const currentPeriod = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "numeric", timeZone })
+    .formatToParts(new Date());
+  const currentYear = Number(currentPeriod.find((part) => part.type === "year").value);
+  const currentMonth = Number(currentPeriod.find((part) => part.type === "month").value);
   let pending;
 
   for (let index = 0; index < 12; index++) {
     month.add(new Option(monthName.format(Date.UTC(2024, index)), index + 1));
   }
-  for (let value = now.getFullYear(); value >= Number(year.dataset.firstYear); value--) {
+  for (let value = currentYear; value >= Number(year.dataset.firstYear); value--) {
     year.add(new Option(value, value));
   }
-  month.value = now.getMonth() + 1;
-  year.value = now.getFullYear();
+  month.value = currentMonth;
+  year.value = currentYear;
+
+  function renderArchive(archive, notice) {
+    archiveNote.hidden = !archive;
+    if (archive) {
+      const last = archive.last_collection_at_utc;
+      const status = last ? "Last background collection: " + collectionTime.format(new Date(last)) + "."
+        : "Waiting for the first successful background collection.";
+      archiveNote.textContent = "Archive time zone: " + archive.timezone + ". " + status;
+    }
+    refreshWarning.hidden = !notice;
+    refreshWarning.textContent = notice || "";
+  }
 
   function formatEnergy(value) {
     return value > 0 && value < 0.001 ? "<" + number.format(0.001) : number.format(value);
@@ -91,6 +109,7 @@
     pending = request;
     reload.disabled = true;
     results.hidden = true;
+    refreshWarning.hidden = true;
     message.textContent = "Loading energy history…";
     const query = new URLSearchParams({ year: year.value, month: month.value, timezone: timeZone });
     if (refresh) query.set("refresh", "1");
@@ -99,6 +118,7 @@
       const response = await fetch("/api/energy?" + query, { cache: "no-store", signal: request.signal });
       const data = await response.json();
       if (pending !== request) return;
+      if (response.ok) renderArchive(data.archive, data.notice);
       if (!response.ok) message.textContent = data.error || "Could not load energy history.";
       else if (data.state === "available") render(data);
       else if (data.state === "empty") message.textContent = "No daily energy readings for this month.";
