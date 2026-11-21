@@ -135,9 +135,22 @@ function renderError(message, source) {
   text("raw", "No current response available.");
 }
 
+const configuredInterval = Number(document.body.dataset.refreshSeconds) * 1000;
+const refreshInterval = configuredInterval >= 5_000 && configuredInterval <= 2_147_483_647
+  ? configuredInterval : 60_000;
 let refreshing = false;
+let refreshTimer;
+let nextRefreshAt = 0;
+
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  if (document.hidden || refreshing) return;
+  refreshTimer = setTimeout(refresh, Math.max(0, Math.ceil(nextRefreshAt - performance.now())));
+}
+
 async function refresh() {
-  if (refreshing) return;
+  if (refreshing || document.hidden) return;
+  clearTimeout(refreshTimer);
   refreshing = true;
   el("refresh").setAttribute("aria-busy", "true");
   const controller = new AbortController();
@@ -152,16 +165,13 @@ async function refresh() {
     renderError(message);
   } finally {
     clearTimeout(timeout);
+    nextRefreshAt = performance.now() + refreshInterval;
     refreshing = false;
     el("refresh").removeAttribute("aria-busy");
+    scheduleRefresh();
   }
 }
 
 el("refresh").addEventListener("click", refresh);
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) refresh();
-});
-setInterval(() => {
-  if (!document.hidden) refresh();
-}, 10000);
-refresh();
+document.addEventListener("visibilitychange", scheduleRefresh);
+scheduleRefresh();

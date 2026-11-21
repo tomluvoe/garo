@@ -12,6 +12,7 @@ For a fresh checkout, copy `.env.example` to `.env` and replace the example addr
 | `GARO_CHARGER_PORT` | Charger HTTP port, defaults to `8080` |
 | `GARO_CHARGER_SERIAL` | Expected charger serial number |
 | `GARO_DASHBOARD_PORT` | Optional Docker Compose host port, defaults to `8765` |
+| `GARO_DASHBOARD_REFRESH_SECONDS` | Optional Docker Compose dashboard refresh interval, defaults to `60` |
 
 ## Run with Docker
 
@@ -59,7 +60,7 @@ python3 garo_bridge.py status
 python3 garo_bridge.py dashboard --sample sample_status.json
 ```
 
-The native commands load `.env` from the checkout. Exported charger settings override the file, and `--host`, `--port`, and `--serial` override both. The bridge checks the charger serial against the configured value. The dashboard listens at `127.0.0.1` with an optional `--listen-port`.
+The native commands load `.env` from the checkout. Exported charger settings override the file, and `--host`, `--port`, and `--serial` override both. The bridge checks the charger serial against the configured value. The dashboard listens at `127.0.0.1` with an optional `--listen-port`. Use `--refresh-seconds` to set the native dashboard refresh interval in seconds.
 
 ## MCP client setup
 
@@ -84,13 +85,14 @@ Run `config --sample sample_status.json` to generate a separate offline MCP conf
 
 - **Connector and operating mode.** The dashboard uses labels from the installed firmware and shows the raw connector code under Source details. For example, this firmware shows `SEARCH_COMM` as “Vehicle not connected” and `SCHEMA` as scheduled mode. `ALWAYS_ON` means charging is allowed. A connector state of `CHARGING` identifies reported active charging.
 - **API response and controller freshness.** API response time is when the bridge received the payload. Controller freshness uses `mainCharger.lastContact`. A timestamp more than five minutes old or more than two minutes ahead falls outside the freshness window. These thresholds are bridge heuristics. The controller's online flag is shown separately since its semantics are unverified.
+- **Refresh cadence.** The dashboard polls for status every 60 seconds by default while its tab is visible. It pauses automatic requests in the background and refreshes when you return if a read is due. Select **Refresh status** for an immediate request. The minimum configured interval is five seconds, matching the bridge's cache window.
 - **Reported measurements.** The installed interface divides power, current, and energy counters by 1,000 to display kW, A, and kWh. A current of `-1` marks current and power unavailable. Positive power or current can persist after a session. The bridge considers power usable as live only when the connector reports `CHARGING`, the timestamp is recent, power is available, and the controller-online flag is not false.
 - **Current limits.** The configured, hardware switch, factory, and pilot limits are separate readings. The pilot is the advertised current.
 - **Sample.** The bundled fixture uses a fictional charger and session. It shows how the dashboard handles a retained 2.3 kW reading after `CHARGING_FINISHED`.
 
 ## Architecture
 
-The CLI, dashboard API, and MCP tools share `ChargerClient` and the same normalization logic. The client makes GET requests to the configured status endpoint with an explicit timeout, no proxy, no redirects, and a bounded response size. Successful and failed reads are deduplicated for up to five seconds per process. A failed read clears the previous result. The browser polls every ten seconds while its tab is visible.
+The CLI, dashboard API, and MCP tools share `ChargerClient` and the same normalization logic. The client makes GET requests to the configured status endpoint with an explicit timeout, no proxy, no redirects, and a bounded response size. Successful and failed reads are deduplicated for up to five seconds per process. A failed read clears the previous result.
 
 The dashboard serves three static assets plus `/api/status` and accepts same-origin requests on loopback. Raw firmware diagnostics are available in a disclosure and in the dedicated MCP tool. The MCP server performs blocking charger I/O off the protocol event loop.
 

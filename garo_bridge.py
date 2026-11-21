@@ -22,6 +22,8 @@ DEVICE_ENV = ("GARO_CHARGER_HOST", "GARO_CHARGER_PORT", "GARO_CHARGER_SERIAL")
 STATUS_PATH = "/servlet/rest/chargebox/status"
 MAX_BYTES = 1024 * 1024
 CACHE_SECONDS = 5
+DEFAULT_REFRESH_SECONDS = 60
+MAX_REFRESH_SECONDS = (2**31 - 1) // 1000
 DASHBOARD_ASSETS = {
     "/": ("index.html", "text/html"),
     "/app.js": ("app.js", "application/javascript"),
@@ -300,7 +302,9 @@ def create_mcp(client):
     return server
 
 
-def dashboard_handler(client, browser_port=None):
+def dashboard_handler(client, browser_port=None, refresh_seconds=DEFAULT_REFRESH_SECONDS):
+    refresh_value = str(refresh_seconds).encode("ascii")
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             port = browser_port if browser_port is not None else self.server.server_port
@@ -326,7 +330,10 @@ def dashboard_handler(client, browser_port=None):
             if path not in DASHBOARD_ASSETS:
                 return self.respond(404, b"Not found", "text/plain")
             filename, mime = DASHBOARD_ASSETS[path]
-            self.respond(200, (ROOT / "dashboard" / filename).read_bytes(), mime)
+            body = (ROOT / "dashboard" / filename).read_bytes()
+            if path == "/":
+                body = body.replace(b"__REFRESH_SECONDS__", refresh_value)
+            self.respond(200, body, mime)
 
         do_HEAD = do_GET
 
@@ -401,12 +408,18 @@ def main():
     parser.add_argument("--listen-host", choices=("127.0.0.1", "0.0.0.0"), default="127.0.0.1", help="Dashboard bind address")
     parser.add_argument("--listen-port", type=int, default=8765, help="Local dashboard port")
     parser.add_argument("--browser-port", type=int, help="Loopback port used in the browser, if forwarded to the listen port")
+    parser.add_argument(
+        "--refresh-seconds", type=int, default=DEFAULT_REFRESH_SECONDS,
+        help=f"Dashboard refresh interval in seconds (default {DEFAULT_REFRESH_SECONDS})",
+    )
     args = parser.parse_args()
     if args.docker and args.command != "config":
         parser.error("--docker is used with the config command.")
     ports = (args.port, args.listen_port, args.browser_port)
     if not all(1 <= port <= 65535 for port in ports if port is not None):
         parser.error("Ports must be between 1 and 65535.")
+    if not CACHE_SECONDS <= args.refresh_seconds <= MAX_REFRESH_SECONDS:
+        parser.error(f"--refresh-seconds must be between {CACHE_SECONDS} and {MAX_REFRESH_SECONDS}.")
     try:
         if args.command == "config":
             print(json.dumps(mcp_config(args), indent=2))
@@ -433,7 +446,8 @@ def main():
             print(json.dumps(client.snapshot()[0], indent=2, allow_nan=False))
         else:
             server = ThreadingHTTPServer(
-                (args.listen_host, args.listen_port), dashboard_handler(client, args.browser_port)
+                (args.listen_host, args.listen_port),
+                dashboard_handler(client, browser_port=args.browser_port, refresh_seconds=args.refresh_seconds),
             )
             print("GARO dashboard: http://127.0.0.1:{}/".format(args.browser_port or args.listen_port), flush=True)
             mode = "sample data" if args.sample else "live charger"
