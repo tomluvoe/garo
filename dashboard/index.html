@@ -7,6 +7,7 @@
   <title>GARO charging dashboard</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
+  <script src="/energy.js" defer></script>
 </head>
 <body data-refresh-seconds="__REFRESH_SECONDS__">
   <div class="shell">
@@ -63,6 +64,41 @@
         <h2 id="notice-title">Reading notes</h2>
         <ul id="warnings"></ul>
       </section>
+      <details class="panel energy-panel" id="energy-history">
+        <summary>Energy history</summary>
+        <div class="energy-controls">
+          <label for="energy-month">Month
+            <select id="energy-month"></select>
+          </label>
+          <label for="energy-year">Year
+            <select id="energy-year" data-first-year="__FIRST_ENERGY_YEAR__"></select>
+          </label>
+          <button id="energy-reload" type="button">Refresh history</button>
+        </div>
+        <p id="energy-meter-warning" class="notice" hidden>The charger reports a meter connection problem.</p>
+        <p id="energy-message" class="energy-message" role="status"></p>
+        <div id="energy-results" hidden>
+          <dl class="energy-totals">
+            <div><dt>Monthly total</dt><dd id="energy-total"></dd></div>
+            <div><dt>Meter reading at period end</dt><dd id="energy-meter"></dd></div>
+          </dl>
+          <div aria-hidden="true">
+            <p class="energy-chart-label">Daily energy (kWh)</p>
+            <div class="energy-chart">
+              <div id="energy-scale" class="energy-scale"></div>
+              <div id="energy-bars" class="energy-bars"></div>
+            </div>
+            <p id="energy-legend" class="energy-legend">Dashed marks show days with no reading.</p>
+          </div>
+          <details class="energy-table">
+            <summary>Daily readings</summary>
+            <table>
+              <thead><tr><th scope="col">Date</th><th scope="col">Energy (kWh)</th></tr></thead>
+              <tbody id="energy-days"></tbody>
+            </table>
+          </details>
+        </div>
+      </details>
       <div class="lower-grid">
         <section class="panel" aria-labelledby="meter-title">
           <h2 id="meter-title">Meter, session and limits</h2>

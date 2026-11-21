@@ -91,6 +91,8 @@ function renderReadings(readings = {}, live = false) {
 function render({ status, raw }) {
   const sample = status.source.kind === "sample";
   const live = status.power_reading_usable_as_live;
+  const meterStatus = raw?.mainCharger?.meterStatus;
+  el("energy-meter-warning").hidden = sample || !Number.isInteger(meterStatus) || meterStatus === 0;
   renderSource(status.source);
   el("charger-name").hidden = false;
   text("charger-name", "Serial " + status.serial_number);
@@ -116,6 +118,7 @@ function render({ status, raw }) {
 
 function renderError(message, source) {
   const sample = source?.kind === "sample";
+  el("energy-meter-warning").hidden = true;
   renderSource(source);
   el("charger-name").hidden = true;
   el("mode").hidden = true;

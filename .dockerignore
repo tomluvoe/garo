@@ -5,4 +5,5 @@
 !dashboard/
 !dashboard/index.html
 !dashboard/app.js
+!dashboard/energy.js
 !dashboard/style.css
