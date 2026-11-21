@@ -185,6 +185,10 @@ class DashboardTests(unittest.TestCase):
             with urlopen(self.base + path) as response:
                 self.assertEqual(response.status, 200)
                 self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
+                if path == "/":
+                    page = response.read()
+                    self.assertIn(b'data-refresh-seconds="60"', page)
+                    self.assertIn(b"Refreshes every 60 seconds", page)
         with urlopen(self.base + "/api/status") as response:
             data = json.load(response)
             self.assertEqual(data["status"]["source"]["kind"], "sample")
@@ -221,14 +225,18 @@ class DashboardTests(unittest.TestCase):
             self.assertNotIn("status", data)
 
     def test_forwarded_dashboard_uses_the_browser_port_for_host_and_origin(self):
-        with ThreadingHTTPServer(("127.0.0.1", 0), bridge.dashboard_handler(self.client, browser_port=18765)) as server:
+        handler = bridge.dashboard_handler(self.client, browser_port=18765, refresh_seconds=30)
+        with ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
             worker = threading.Thread(target=server.serve_forever, daemon=True)
             worker.start()
-            url = f"http://127.0.0.1:{server.server_port}/healthz"
+            url = f"http://127.0.0.1:{server.server_port}/"
             try:
                 headers = {"Host": "127.0.0.1:18765", "Origin": "http://127.0.0.1:18765"}
                 with urlopen(Request(url, headers=headers)) as response:
                     self.assertEqual(response.status, 200)
+                    page = response.read()
+                    self.assertIn(b'data-refresh-seconds="30"', page)
+                    self.assertIn(b"Refreshes every 30 seconds", page)
                 with self.assertRaises(HTTPError) as result:
                     urlopen(url)
                 self.assertEqual(result.exception.code, 403)
