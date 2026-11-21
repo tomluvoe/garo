@@ -77,7 +77,7 @@ def mock_charger():
             if behavior["reply"] == "unconfirmed":
                 self.reply(True)
                 return
-            if self.path in (bridge.MODE_PATH + "ALWAYS_ON", bridge.MODE_PATH + "ALWAYS_OFF"):
+            if self.path in [bridge.MODE_PATH + mode for mode in bridge.CONTROL_MODES]:
                 status["mode"] = self.path.rsplit("/", 1)[1]
                 self.reply(True)
             elif self.path == bridge.CABLE_LOCK_PATH:
@@ -126,6 +126,25 @@ class DashboardControlTests(unittest.TestCase):
             (bridge.CABLE_LOCK_PATH, {"serialNumber": SERIAL, "cableLockMode": 0, "minCurrentLimit": 6}),
         ])
 
+    def test_dashboard_sets_each_operating_mode_and_confirms_readback(self):
+        scheduled = self.apply("mode", {"mode": "SCHEMA"})
+        self.assertTrue(scheduled["changed"])
+        self.assertEqual(scheduled["status"]["controls"]["mode"], "SCHEMA")
+        self.assertIsNone(scheduled["status"]["controls"]["available"])
+        self.assertFalse(self.apply("mode", {"mode": "SCHEMA"})["changed"])
+        self.assertEqual(self.apply("mode", {"mode": "ALWAYS_OFF"})["status"]["controls"]["available"], False)
+        self.assertEqual(self.apply("mode", {"mode": "ALWAYS_ON"})["status"]["controls"]["mode"], "ALWAYS_ON")
+        self.assertEqual(self.writes, [
+            (bridge.MODE_PATH + "SCHEMA", None),
+            (bridge.MODE_PATH + "ALWAYS_OFF", None),
+            (bridge.MODE_PATH + "ALWAYS_ON", None),
+        ])
+
+    def test_firmware_schedule_alias_counts_as_schedule_mode(self):
+        self.raw["mode"] = "SCHEDULE"
+        self.assertFalse(self.apply("mode", {"mode": "SCHEMA"})["changed"])
+        self.assertEqual(self.writes, [])
+
     def test_only_same_origin_json_boolean_requests_can_write(self):
         for action, value, headers, code in [
             ("availability", {"available": False}, {}, 403),
@@ -135,6 +154,10 @@ class DashboardControlTests(unittest.TestCase):
             ("availability", {"available": "false"}, self.headers, 400),
             ("cable-lock", {"locked": True, "serial": SERIAL + 1}, self.headers, 400),
             ("current-limit", {"amps": 32}, self.headers, 405),
+            ("mode", {"mode": "SCHEDULE"}, self.headers, 400),
+            ("mode", {"mode": True}, self.headers, 400),
+            ("mode", {"mode": ["ALWAYS_ON"]}, self.headers, 400),
+            ("mode", {"mode": "ALWAYS_ON"}, dict(self.headers, Origin="https://example.com"), 403),
         ]:
             with self.subTest(action=action, code=code), self.assertRaises(HTTPError) as exc:
                 self.apply(action, value, headers)

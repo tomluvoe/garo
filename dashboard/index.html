@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#122827">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#eff4f0" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d1f1a" media="(prefers-color-scheme: dark)">
   <title>GARO charging dashboard</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
@@ -13,144 +15,130 @@
 <body data-refresh-seconds="__REFRESH_SECONDS__">
   <div class="shell">
     <header class="masthead">
-      <span class="wordmark">GARO</span>
-      <span class="dashboard-label">Local dashboard</span>
+      <div class="brand">
+        <span class="wordmark">GARO</span>
+        <span id="charger-name" class="subtle" hidden></span>
+      </div>
+      <div class="live">
+        <span id="live" class="live-status" data-state="connecting"><span class="dot" aria-hidden="true"></span><span id="updated">Connecting…</span></span>
+        <button id="refresh" type="button" class="icon-button" aria-label="Refresh status">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></svg>
+        </button>
+      </div>
     </header>
     <main>
-      <div class="heading">
-        <div>
-          <h1>Charger overview</h1>
-          <p id="charger-name" class="subtle" hidden></p>
-        </div>
-        <button id="refresh" type="button">Refresh status</button>
-      </div>
       <p id="sample-banner" class="sample-banner" hidden>Sample preview from a local JSON file.</p>
       <noscript><p class="notice">Enable JavaScript to load charger status.</p></noscript>
-      <section class="overview" aria-labelledby="state">
-        <div class="overview-copy">
-          <p class="section-label">Connector status</p>
-          <h2 id="state" aria-live="polite" aria-atomic="true">Connecting…</h2>
+      <p id="alert" class="notice" role="alert" hidden></p>
+
+      <section class="overview" data-state="connecting" aria-labelledby="state">
+        <div class="overview-main">
+          <p class="state-chip"><span class="dot" aria-hidden="true"></span><span id="state" aria-live="polite" aria-atomic="true">Connecting</span></p>
+          <p id="headline" class="headline">Reading the charger…</p>
           <p id="state-detail" class="state-detail">Requesting charger status.</p>
-          <p id="mode" class="mode" hidden></p>
+          <div id="draw" class="draw" hidden>
+            <div class="draw-track"><div id="draw-fill" class="draw-fill"></div></div>
+          </div>
+          <p id="state-note" class="state-note" hidden></p>
+          <p id="mode" class="state-note" hidden></p>
         </div>
-        <dl class="overview-details">
-          <div><dt>Data source</dt><dd id="connection-state">Connecting</dd></div>
-          <div><dt>API response</dt><dd id="updated">—</dd></div>
-          <div><dt>Controller freshness</dt><dd id="freshness">Unverified</dd></div>
-        </dl>
+
+        <div id="charger-controls" class="overview-controls" hidden>
+          <div class="control-group">
+            <h2 id="mode-label" class="control-label">Charging mode</h2>
+            <div class="segmented" role="group" aria-labelledby="mode-label">
+              <button type="button" data-mode="ALWAYS_ON" aria-pressed="false" disabled>On</button>
+              <button type="button" data-mode="SCHEMA" aria-pressed="false" disabled>Schedule</button>
+              <button type="button" data-mode="ALWAYS_OFF" aria-pressed="false" disabled>Off</button>
+            </div>
+            <p id="mode-text" class="control-text"></p>
+          </div>
+          <div class="lock-row">
+            <span class="lock-state">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+              <span id="control-cable-lock">Cable lock unknown</span>
+            </span>
+            <button type="button" id="cable-lock-toggle" class="ghost-button" aria-describedby="lock-note" disabled>Enable lock</button>
+            <p id="lock-note" class="control-text lock-note">The charger controls when the cable latch can release.</p>
+          </div>
+          <p id="control-result" class="control-text" role="status" hidden></p>
+        </div>
       </section>
-      <section class="metrics" aria-label="Reported readings">
-        <article class="metric">
-          <h2>Reported power</h2>
-          <p id="power" class="value">—</p>
-          <p id="power-note" class="metric-note">Awaiting status</p>
-        </article>
-        <article class="metric">
-          <h2>Session energy</h2>
-          <p id="energy" class="value">—</p>
-          <p class="metric-note">Latest reported session</p>
-        </article>
-        <article class="metric">
-          <h2>Current limit</h2>
-          <p id="limit" class="value">—</p>
-          <p id="pilot" class="metric-note">Awaiting pilot current</p>
-        </article>
-        <article class="metric">
-          <h2>Temperature</h2>
-          <p id="temperature" class="value">—</p>
-          <p class="metric-note">Reported by charger</p>
-        </article>
-      </section>
-      <section id="notice" class="notice" hidden aria-labelledby="notice-title">
-        <h2 id="notice-title">Reading notes</h2>
-        <ul id="warnings"></ul>
-      </section>
-      <details class="panel controls-panel" id="charger-controls" hidden>
-        <summary>Charger controls</summary>
-        <div class="controls-row">
-          <div><h2 id="availability-label">Charger availability</h2><p id="control-availability" class="subtle">Unknown</p></div>
-          <div class="control-actions" role="group" aria-labelledby="availability-label">
-            <button type="button" data-field="available" data-value="true" disabled>Make available</button>
-            <button type="button" data-field="available" data-value="false" disabled>Make unavailable</button>
+
+      <section id="energy-history" class="panel energy-panel" data-energy-timezone="" data-first-year="__FIRST_ENERGY_YEAR__" aria-labelledby="energy-title">
+        <div class="panel-head">
+          <h2 id="energy-title">Energy charged per day</h2>
+          <div class="month-nav">
+            <button id="energy-prev" type="button" class="icon-button" aria-label="Previous month">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+            </button>
+            <span id="energy-period" class="month-label" aria-live="polite"></span>
+            <button id="energy-next" type="button" class="icon-button" aria-label="Next month">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+            </button>
           </div>
         </div>
-        <div class="controls-row">
-          <div><h2 id="cable-lock-label">Cable lock setting</h2><p id="control-cable-lock" class="subtle">Unknown</p></div>
-          <div class="control-actions" role="group" aria-labelledby="cable-lock-label">
-            <button type="button" data-field="locked" data-value="true" disabled>Lock cable</button>
-            <button type="button" data-field="locked" data-value="false" disabled>Unlock cable</button>
-          </div>
-        </div>
-        <p class="subtle">The charger governs when the outlet latch can move.</p>
-        <p id="control-result" role="status" hidden></p>
-      </details>
-      <details class="panel energy-panel" id="energy-history" data-energy-timezone="">
-        <summary>Energy history</summary>
-        <div class="energy-controls">
-          <label for="energy-month">Month
-            <select id="energy-month"></select>
-          </label>
-          <label for="energy-year">Year
-            <select id="energy-year" data-first-year="__FIRST_ENERGY_YEAR__"></select>
-          </label>
-          <button id="energy-reload" type="button">Refresh history</button>
-        </div>
+        <p class="energy-total"><span id="energy-total">—</span> <span class="unit">kWh</span> <span id="energy-summary" class="subtle"></span></p>
         <p id="energy-meter-warning" class="notice" hidden>The charger reports a meter connection problem.</p>
-        <p id="energy-archive-note" class="energy-message" hidden></p>
         <p id="energy-refresh-warning" class="notice" role="status" hidden></p>
         <p id="energy-message" class="energy-message" role="status"></p>
         <div id="energy-results" hidden>
-          <dl class="energy-totals">
-            <div><dt>Monthly total</dt><dd id="energy-total"></dd></div>
-            <div><dt>Meter reading at period end</dt><dd id="energy-meter"></dd></div>
-          </dl>
-          <div aria-hidden="true">
-            <p class="energy-chart-label">Daily energy (kWh)</p>
-            <div class="energy-chart">
-              <div id="energy-scale" class="energy-scale"></div>
-              <div id="energy-bars" class="energy-bars"></div>
-            </div>
-            <p id="energy-legend" class="energy-legend">Dashed marks show days with no reading.</p>
+          <div class="energy-chart" aria-hidden="true">
+            <div id="energy-scale" class="energy-scale"></div>
+            <div id="energy-bars" class="energy-bars"></div>
           </div>
+          <p id="energy-legend" class="energy-legend"></p>
           <details class="energy-table">
-            <summary>Daily readings</summary>
+            <summary>Show daily readings as a table</summary>
             <table>
               <thead><tr><th scope="col">Date</th><th scope="col">Energy (kWh)</th></tr></thead>
               <tbody id="energy-days"></tbody>
             </table>
           </details>
         </div>
-      </details>
-      <div class="lower-grid">
-        <section class="panel" aria-labelledby="meter-title">
-          <h2 id="meter-title">Meter, session and limits</h2>
+        <div class="panel-foot">
+          <p id="energy-archive-note" class="subtle" hidden></p>
+          <button id="energy-reload" type="button" class="text-button">Refresh history</button>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="charger-title">
+        <h2 id="charger-title">Charger</h2>
+        <dl class="facts">
+          <div><dt>Lifetime energy</dt><dd id="total">—</dd></div>
+          <div><dt>Current limit</dt><dd id="limit">—</dd></div>
+          <div><dt>Hardware switch limit</dt><dd id="switch-limit">—</dd></div>
+          <div><dt>Phases</dt><dd id="phases">—</dd></div>
+          <div><dt>Temperature</dt><dd id="temperature">—</dd></div>
+        </dl>
+      </section>
+
+      <details id="diagnostics" class="panel diagnostics">
+        <summary><span class="summary-title">Diagnostics</span><span id="diagnostics-summary" class="subtle">Waiting for status</span></summary>
+        <div class="diagnostics-body">
+          <ul id="warnings" class="notes" hidden></ul>
           <dl class="rows">
-            <div><dt>Reported current</dt><dd id="current">—</dd></div>
-            <div><dt>Reported phases</dt><dd id="phases">—</dd></div>
-            <div><dt>Total metered energy</dt><dd id="total">—</dd></div>
-            <div><dt>Session started</dt><dd id="session-start">—</dd></div>
-            <div><dt>Session duration</dt><dd id="duration">—</dd></div>
-            <div><dt>Hardware switch limit</dt><dd id="switch-limit">—</dd></div>
-            <div><dt>Factory limit</dt><dd id="factory-limit">—</dd></div>
-          </dl>
-        </section>
-        <section class="panel" aria-labelledby="source-title">
-          <h2 id="source-title">Source details</h2>
-          <dl class="rows">
+            <div><dt>Data source</dt><dd id="connection-state">Connecting</dd></div>
+            <div><dt>API response</dt><dd id="received">—</dd></div>
+            <div><dt>Controller freshness</dt><dd id="freshness">Unverified</dd></div>
             <div><dt>Controller timestamp</dt><dd id="last-contact">—</dd></div>
             <div><dt>Controller online flag</dt><dd id="online-flag">—</dd></div>
             <div><dt>Firmware connector code</dt><dd id="connector-code">—</dd></div>
+            <div><dt>Pilot current</dt><dd id="pilot">—</dd></div>
+            <div><dt>Reported power</dt><dd id="power">—</dd></div>
+            <div><dt>Reported current</dt><dd id="current">—</dd></div>
+            <div><dt>Factory limit</dt><dd id="factory-limit">—</dd></div>
             <div id="endpoint-row" hidden><dt>Charger address</dt><dd id="endpoint"></dd></div>
           </dl>
-          <a id="original" class="original-link" target="_blank" rel="noopener noreferrer" hidden>Open original GARO interface (new tab)</a>
-        </section>
-      </div>
-      <details class="raw">
-        <summary>Inspect raw status response</summary>
-        <pre id="raw">No data received.</pre>
+          <a id="original" class="original-link" target="_blank" rel="noopener noreferrer" hidden>Open the original GARO page (new tab)</a>
+          <details class="raw">
+            <summary>Raw status response</summary>
+            <pre id="raw">No data received.</pre>
+          </details>
+        </div>
       </details>
     </main>
-    <footer>Refreshes every __REFRESH_SECONDS__ seconds while this tab is visible.</footer>
+    <footer id="refresh-note">Refreshes every __REFRESH_SECONDS__ seconds while this tab is visible.</footer>
   </div>
 </body>
 </html>
