@@ -7,13 +7,14 @@
   <title>GARO charging dashboard</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
+  <script src="/controls.js" defer></script>
   <script src="/energy.js" defer></script>
 </head>
 <body data-refresh-seconds="__REFRESH_SECONDS__">
   <div class="shell">
     <header class="masthead">
       <span class="wordmark">GARO</span>
-      <span class="read-only">Read-only dashboard</span>
+      <span class="dashboard-label">Local dashboard</span>
     </header>
     <main>
       <div class="heading">
@@ -64,6 +65,25 @@
         <h2 id="notice-title">Reading notes</h2>
         <ul id="warnings"></ul>
       </section>
+      <details class="panel controls-panel" id="charger-controls" hidden>
+        <summary>Charger controls</summary>
+        <div class="controls-row">
+          <div><h2 id="availability-label">Charger availability</h2><p id="control-availability" class="subtle">Unknown</p></div>
+          <div class="control-actions" role="group" aria-labelledby="availability-label">
+            <button type="button" data-field="available" data-value="true" disabled>Make available</button>
+            <button type="button" data-field="available" data-value="false" disabled>Make unavailable</button>
+          </div>
+        </div>
+        <div class="controls-row">
+          <div><h2 id="cable-lock-label">Cable lock setting</h2><p id="control-cable-lock" class="subtle">Unknown</p></div>
+          <div class="control-actions" role="group" aria-labelledby="cable-lock-label">
+            <button type="button" data-field="locked" data-value="true" disabled>Lock cable</button>
+            <button type="button" data-field="locked" data-value="false" disabled>Unlock cable</button>
+          </div>
+        </div>
+        <p class="subtle">The charger governs when the outlet latch can move.</p>
+        <p id="control-result" role="status" hidden></p>
+      </details>
       <details class="panel energy-panel" id="energy-history" data-energy-timezone="">
         <summary>Energy history</summary>
         <div class="energy-controls">

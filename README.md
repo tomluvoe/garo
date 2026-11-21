@@ -1,6 +1,6 @@
 # GARO local dashboard and MCP server
 
-Read your GARO charger's status from your home network. The integration is read-only and runs on your computer.
+Read your GARO charger's status and use its availability and cable-lock controls from your home network. The integration runs on your computer.
 
 ## Local charger configuration
 
@@ -90,6 +90,8 @@ Add the generated `mcpServers.garo` entry to a local MCP client that supports st
 | --- | --- |
 | `get_charger_status` | Structured status with connector state, reported readings, limits, and freshness evidence |
 | `get_charger_diagnostics` | Structured status plus the original firmware payload |
+| `set_charger_availability(available)` | Confirmed availability setting after the requested boolean change |
+| `set_cable_lock(locked)` | Confirmed outlet cable-lock setting after the requested boolean change |
 
 Run `config --sample sample_status.json` to generate a separate offline MCP configuration. Sample mode reads a JSON file and labels its readings as sample data.
 
@@ -102,6 +104,12 @@ Run `config --sample sample_status.json` to generate a separate offline MCP conf
 - **Current limits.** The configured, hardware switch, factory, and pilot limits are separate readings. The pilot is the advertised current.
 - **Energy history.** Open **Energy history** and select a month to see daily kWh, the recorded monthly total, and the cumulative meter reading at the end of the period. Expand **Daily readings** for exact values and days with no reading. Dates use the archive's configured time zone when an archive is enabled and the browser's time zone otherwise.
 - **Sample.** The bundled fixture uses a fictional charger and session. It shows how the dashboard handles a retained 2.3 kW reading after `CHARGING_FINISHED`.
+
+## Charger controls
+
+Open **Charger controls** to make the charger available or unavailable and lock or unlock the outlet cable. Availability control targets a single locally managed charger. Selecting either availability state sets a fixed operating mode and replaces an active schedule mode. Cable locking requires a supported socket outlet and firmware. Its readback confirms the lock setting, and the charger governs when the physical latch can move.
+
+The dashboard and MCP use the same commands and confirm each requested setting with a fresh status read. If a command fails or readback disagrees, refresh the charger's status before retrying. Sample mode offers status and diagnostics for the synthetic fixture.
 
 ## Architecture
 

@@ -88,7 +88,12 @@ function renderReadings(readings = {}, live = false) {
   text("factory-limit", quantity(readings.factory_limit_a, "A"));
 }
 
+let newestStatusTime = -Infinity;
+
 function render({ status, raw }) {
+  const receivedAt = Date.parse(status.source.http_received_at_utc);
+  if (receivedAt < newestStatusTime) return;
+  if (Number.isFinite(receivedAt)) newestStatusTime = receivedAt;
   const sample = status.source.kind === "sample";
   const live = status.power_reading_usable_as_live;
   const meterStatus = raw?.mainCharger?.meterStatus;
@@ -114,6 +119,7 @@ function render({ status, raw }) {
   renderReadings(status.reported, live);
   renderNotes(status.warnings);
   text("raw", JSON.stringify(raw, null, 2));
+  window.dispatchEvent(new CustomEvent("garo-status", { detail: status }));
 }
 
 function renderError(message, source) {
@@ -136,6 +142,7 @@ function renderError(message, source) {
   renderReadings();
   renderNotes([message], "Status request failed");
   text("raw", "No current response available.");
+  window.dispatchEvent(new CustomEvent("garo-status", { detail: null }));
 }
 
 const configuredInterval = Number(document.body.dataset.refreshSeconds) * 1000;
