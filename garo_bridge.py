@@ -2,12 +2,14 @@
 """Read-only GARO dashboard and local MCP adapter."""
 import argparse
 import asyncio
+import calendar
+from collections import OrderedDict
 import copy
 import ipaddress
 import json
 import math
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,18 +17,26 @@ import sys
 import threading
 import time
 from typing import Any
+from urllib.error import HTTPError
+from urllib.parse import parse_qs
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent
 DEVICE_ENV = ("GARO_CHARGER_HOST", "GARO_CHARGER_PORT", "GARO_CHARGER_SERIAL")
 STATUS_PATH = "/servlet/rest/chargebox/status"
+ENERGY_PATH = "/servlet/rest/chargebox/energy"
 MAX_BYTES = 1024 * 1024
 CACHE_SECONDS = 5
+ENERGY_CACHE_SECONDS = 300
+ENERGY_CACHE_MONTHS = 12
+FIRST_ENERGY_YEAR = 2017
 DEFAULT_REFRESH_SECONDS = 60
 MAX_REFRESH_SECONDS = (2**31 - 1) // 1000
 DASHBOARD_ASSETS = {
     "/": ("index.html", "text/html"),
     "/app.js": ("app.js", "application/javascript"),
+    "/energy.js": ("energy.js", "application/javascript"),
     "/style.css": ("style.css", "text/css"),
 }
 CONNECTOR_LABELS = {
@@ -199,6 +209,63 @@ def parse_json_number(value, convert):
     return result
 
 
+def decode_charger_json(body):
+    if len(body) > MAX_BYTES:
+        raise ChargerError("Charger response exceeds 1 MiB.")
+    return json.loads(
+        body,
+        parse_constant=invalid_constant,
+        parse_float=lambda value: parse_json_number(value, float),
+        parse_int=lambda value: parse_json_number(value, int),
+    )
+
+
+def energy_query(query):
+    try:
+        params = parse_qs(query, keep_blank_values=True, strict_parsing=True, max_num_fields=4)
+        if any(key not in {"year", "month", "timezone", "refresh"} or len(values) != 1
+               for key, values in params.items()):
+            raise ValueError
+        year, month = int(params["year"][0]), int(params["month"][0])
+        zone = ZoneInfo(params.get("timezone", ["UTC"])[0])
+        refresh = params.get("refresh", ["0"])[0]
+        if not FIRST_ENERGY_YEAR <= year <= datetime.now(zone).year or not 1 <= month <= 12:
+            raise ValueError
+        if refresh not in {"0", "1"}:
+            raise ValueError
+    except (KeyError, ValueError) as exc:
+        raise ValueError("Provide a valid year, month, time zone, and optional refresh flag.") from exc
+    return year, month, zone, refresh == "1"
+
+
+def normalize_energy(raw, serial, year, month, zone):
+    if not isinstance(raw, dict) or type(raw.get("chargeboxSerial")) is not int or raw["chargeboxSerial"] != serial:
+        raise ChargerError("Energy history did not identify the configured charger.")
+    stamps, values = raw.get("timestamps"), raw.get("values")
+    if not isinstance(stamps, list) or not isinstance(values, list) or len(stamps) != len(values):
+        raise ChargerError("Energy history contained mismatched daily readings.")
+    readings = {}
+    for stamp, value in zip(stamps, values):
+        instant = timestamp(stamp)
+        energy = number(value)
+        if instant is None or energy is None or energy < 0:
+            raise ChargerError("Energy history contained an invalid daily reading.")
+        day = instant.astimezone(zone).date()
+        if (day.year, day.month) != (year, month) or day in readings:
+            raise ChargerError("Energy history contained a duplicate or out-of-month reading.")
+        readings[day] = energy
+    if not readings:
+        return {"state": "empty"}
+    days = [date(year, month, d) for d in range(1, calendar.monthrange(year, month)[1] + 1)]
+    meter = number(raw.get("stopValue"))
+    return {
+        "state": "available",
+        "days": [{"date": day.isoformat(), "kwh": readings.get(day)} for day in days],
+        "total_kwh": math.fsum(readings.values()),
+        "meter_kwh": meter if meter is not None and meter >= 0 else None,
+    }
+
+
 def local_host(value):
     if value == "localhost":
         return value
@@ -220,6 +287,8 @@ class ChargerClient:
         self.serial, self.timeout = serial, timeout
         self.lock = threading.Lock()
         self.cached, self.last_attempt, self.last_error = None, None, None
+        self.energy_lock = threading.Lock()
+        self.energy_cache = OrderedDict()
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
 
     def source(self, received_at=None):
@@ -231,32 +300,62 @@ class ChargerClient:
         }
 
     def _fetch(self):
-        received_at = None
         if self.sample:
             with self.sample.open("rb") as handle:
-                body = handle.read(MAX_BYTES + 1)
+                raw = decode_charger_json(handle.read(MAX_BYTES + 1))
+            received_at = None
         else:
-            request = Request(self.base + STATUS_PATH + "?_=" + str(int(time.time() * 1000)), method="GET", headers={
-                "Accept": "application/json", "Cache-Control": "no-cache, no-store", "Pragma": "no-cache",
-                "User-Agent": "GARO-local-bridge/0.1.0",
-            })
-            with self.opener.open(request, timeout=self.timeout) as response:
-                body = response.read(MAX_BYTES + 1)
-                if response.length and len(body) <= MAX_BYTES:
-                    raise ChargerError("The charger closed the connection before sending a complete response.")
-                received_at = datetime.now(timezone.utc)
-        if len(body) > MAX_BYTES:
-            raise ChargerError("Status response exceeds 1 MiB.")
-        raw = json.loads(
-            body,
-            parse_constant=invalid_constant,
-            parse_float=lambda value: parse_json_number(value, float),
-            parse_int=lambda value: parse_json_number(value, int),
-        )
+            raw, received_at = self._request_json(STATUS_PATH + "?_=" + str(int(time.time() * 1000)))
         serial, _ = charger_identity(raw)
         if self.serial is not None and serial != self.serial:
             raise ChargerError("Serial mismatch: expected {}, received {}.".format(self.serial, serial))
         return raw, self.source(received_at)
+
+    def _request_json(self, path, payload=None):
+        headers = {
+            "Accept": "application/json", "Cache-Control": "no-cache, no-store", "Pragma": "no-cache",
+            "User-Agent": "GARO-local-bridge/0.1.0",
+        }
+        body = None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+            body = json.dumps(payload).encode()
+        request = Request(self.base + path, data=body, headers=headers)
+        with self.opener.open(request, timeout=self.timeout) as response:
+            body = response.read(MAX_BYTES + 1)
+            if response.length and len(body) <= MAX_BYTES:
+                raise ChargerError("The charger closed the connection before sending a complete response.")
+            received_at = datetime.now(timezone.utc)
+        return decode_charger_json(body), received_at
+
+    def energy_history(self, year, month, zone, refresh=False):
+        if self.sample:
+            return {"state": "unavailable", "message": "Energy history is unavailable in sample mode."}
+        key = (year, month)
+        max_age = CACHE_SECONDS if refresh else ENERGY_CACHE_SECONDS
+        with self.energy_lock:
+            entry = self.energy_cache.pop(key, None)
+            try:
+                if entry and time.monotonic() - entry[0] < max_age:
+                    raw = entry[1]
+                else:
+                    # The firmware exposes this read-only query as a POST.
+                    raw, _ = self._request_json(ENERGY_PATH, {
+                        "chargeboxSerial": str(self.serial), "year": str(year), "month": str(month),
+                        "meterSerial": "DEFAULT", "resolution": "DAY",
+                    })
+                    entry = (time.monotonic(), raw)
+                result = normalize_energy(raw, self.serial, year, month, zone)
+            except HTTPError as exc:
+                if exc.code in (404, 405):
+                    return {"state": "unavailable", "message": "The charger does not expose energy history."}
+                raise ChargerError(f"Cannot read energy history: {exc}") from exc
+            except (OSError, ValueError, HTTPException, RecursionError, OverflowError, ChargerError) as exc:
+                raise ChargerError(f"Cannot read energy history: {exc}") from exc
+            self.energy_cache[key] = entry
+            if len(self.energy_cache) > ENERGY_CACHE_MONTHS:
+                self.energy_cache.popitem(last=False)
+            return result
 
     def snapshot(self):
         with self.lock:
@@ -318,7 +417,7 @@ def dashboard_handler(client, browser_port=None, refresh_seconds=DEFAULT_REFRESH
             authority = host.removesuffix(":80") if port == 80 else host
             if origins and origins != [f"http://{authority}"]:
                 return self.respond(403, b"Host or Origin rejected.", "text/plain")
-            path = self.path.partition("?")[0]
+            path, _, query = self.path.partition("?")
             if path == "/healthz":
                 return self.respond_json(200, {"status": "ok"})
             if path == "/api/status":
@@ -327,12 +426,22 @@ def dashboard_handler(client, browser_port=None, refresh_seconds=DEFAULT_REFRESH
                     return self.respond_json(200, {"status": status, "raw": raw})
                 except ChargerError as exc:
                     return self.respond_json(502, {"error": str(exc), "source": client.source()})
+            if path == "/api/energy":
+                try:
+                    year, month, zone, refresh = energy_query(query)
+                except ValueError as exc:
+                    return self.respond_json(400, {"error": str(exc)})
+                try:
+                    return self.respond_json(200, client.energy_history(year, month, zone, refresh))
+                except ChargerError as exc:
+                    return self.respond_json(502, {"error": str(exc)})
             if path not in DASHBOARD_ASSETS:
                 return self.respond(404, b"Not found", "text/plain")
             filename, mime = DASHBOARD_ASSETS[path]
             body = (ROOT / "dashboard" / filename).read_bytes()
             if path == "/":
                 body = body.replace(b"__REFRESH_SECONDS__", refresh_value)
+                body = body.replace(b"__FIRST_ENERGY_YEAR__", str(FIRST_ENERGY_YEAR).encode("ascii"))
             self.respond(200, body, mime)
 
         do_HEAD = do_GET

@@ -88,13 +88,16 @@ Run `config --sample sample_status.json` to generate a separate offline MCP conf
 - **Refresh cadence.** The dashboard polls for status every 60 seconds by default while its tab is visible. It pauses automatic requests in the background and refreshes when you return if a read is due. Select **Refresh status** for an immediate request. The minimum configured interval is five seconds, matching the bridge's cache window.
 - **Reported measurements.** The installed interface divides power, current, and energy counters by 1,000 to display kW, A, and kWh. A current of `-1` marks current and power unavailable. Positive power or current can persist after a session. The bridge considers power usable as live only when the connector reports `CHARGING`, the timestamp is recent, power is available, and the controller-online flag is not false.
 - **Current limits.** The configured, hardware switch, factory, and pilot limits are separate readings. The pilot is the advertised current.
+- **Energy history.** Open **Energy history** and select a month to see daily kWh, the recorded monthly total, and the cumulative meter reading at the end of the period. Expand **Daily readings** for exact values and days with no reading. Dates follow the browser's time zone, as in the original GARO interface.
 - **Sample.** The bundled fixture uses a fictional charger and session. It shows how the dashboard handles a retained 2.3 kW reading after `CHARGING_FINISHED`.
 
 ## Architecture
 
 The CLI, dashboard API, and MCP tools share `ChargerClient` and the same normalization logic. The client makes GET requests to the configured status endpoint with an explicit timeout, no proxy, no redirects, and a bounded response size. Successful and failed reads are deduplicated for up to five seconds per process. A failed read clears the previous result.
 
-The dashboard serves three static assets plus `/api/status` and accepts same-origin requests on loopback. Raw firmware diagnostics are available in a disclosure and in the dedicated MCP tool. The MCP server performs blocking charger I/O off the protocol event loop.
+The dashboard serves static assets plus `/api/status` and `/api/energy` and accepts same-origin requests on loopback. Opening Energy history or selecting a month uses a read-only firmware query for the configured charger and default meter. Monthly history is cached for five minutes. **Refresh history** rechecks the charger after the five-second duplicate-request window. Sample mode runs without a charger connection.
+
+Raw status diagnostics are available in a disclosure and in the dedicated MCP tool. The MCP server performs blocking charger I/O off the protocol event loop.
 
 ## Validation
 
