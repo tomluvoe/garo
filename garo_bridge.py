@@ -170,8 +170,6 @@ def normalize(raw, source, now=None):
         warnings.append("Controller timestamp is over five minutes old. Check its clock and measurement freshness.")
     else:
         freshness = "recent_controller_timestamp"
-    if online is False:
-        warnings.append("The controller reports its online flag as false. Live power is unverified.")
     current_ma = number(raw.get("currentChargingCurrent"))
     power = number(raw.get("currentChargingPower"))
     # The firmware uses a current of -1 to signal unavailable meter readings.
@@ -222,8 +220,7 @@ def normalize(raw, source, now=None):
             "phases": number(raw.get("nrOfPhases")),
         },
         "power_reading_usable_as_live": bool(
-            not sample and freshness == "recent_controller_timestamp" and online is not False
-            and charging and power is not None
+            not sample and freshness == "recent_controller_timestamp" and charging and power is not None
         ),
         "warnings": warnings,
     }

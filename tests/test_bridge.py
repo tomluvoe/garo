@@ -48,6 +48,14 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(result["power_reading_usable_as_live"])
         self.assertEqual(result["warnings"], [])
 
+    def test_online_flag_off_allows_live_local_readings(self):
+        self.raw["mainCharger"].update(lastContact=int(self.now.timestamp() * 1000), online=False)
+        self.raw["connector"] = "CHARGING"
+        result = bridge.normalize(self.raw, self.source, self.now)
+        self.assertIs(result["freshness"]["controller_online_flag"], False)
+        self.assertTrue(result["power_reading_usable_as_live"])
+        self.assertEqual(result["warnings"], [])
+
     def test_sample_never_becomes_live_even_with_recent_timestamp(self):
         self.raw["mainCharger"].update(lastContact=int(self.now.timestamp() * 1000), online=True)
         self.raw["connector"] = "CHARGING"
@@ -74,10 +82,12 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(result["power_reading_usable_as_live"])
 
     def test_old_future_and_missing_timestamps(self):
+        self.raw["connector"] = "CHARGING"
         for delta in [-600, 600]:
             self.raw["mainCharger"]["lastContact"] = int((self.now + timedelta(seconds=delta)).timestamp() * 1000)
             result = bridge.normalize(self.raw, self.source, self.now)
             self.assertEqual(result["freshness"]["status"], "clock_or_freshness_issue")
+            self.assertFalse(result["power_reading_usable_as_live"])
         self.raw.pop("mainCharger")
         result = bridge.normalize(self.raw, self.source, self.now)
         self.assertEqual(result["freshness"]["status"], "unknown")

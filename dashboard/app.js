@@ -195,8 +195,6 @@ function render({ status, raw }) {
   text("received", formatDate(status.source.http_received_at_utc, formats.time));
   text("freshness", sample ? "Sample data" : freshnessLabels[status.freshness.status] || "Unverified");
   text("last-contact", formatDate(status.freshness.controller_last_contact_utc));
-  const online = status.freshness.controller_online_flag;
-  text("online-flag", typeof online === "boolean" ? String(online) : blank);
   text("connector-code", status.connector);
   renderReadings(status.reported);
   renderDiagnostics(status.warnings, status.freshness.status === "clock_or_freshness_issue");
@@ -226,7 +224,7 @@ function renderError(message, source) {
   text("connection-state", sample ? "Sample file error" : source ? "Charger read failed" : "Dashboard request failed");
   text("received", blank);
   text("freshness", "Unverified");
-  for (const id of ["last-contact", "online-flag", "connector-code"]) text(id, blank);
+  for (const id of ["last-contact", "connector-code"]) text(id, blank);
 
   renderReadings();
   renderDiagnostics([message], true);
